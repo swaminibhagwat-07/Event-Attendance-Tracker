@@ -1,0 +1,1792 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CampusGate | Event Attendance & Live Barcode Scanner</title>
+  
+  <!-- Inter & JetBrains Mono Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          animation: {
+            'fade-in': 'fadeIn 0.25s ease-in-out',
+            'slide-in': 'slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+            'shake': 'shake 0.4s cubic-bezier(0.36, 0.07, 0.19, 0.97) both',
+            'laser-scan': 'laserScan 2.2s ease-in-out infinite',
+          },
+          keyframes: {
+            fadeIn: {
+              '0%': { opacity: '0', transform: 'translateY(6px)' },
+              '100%': { opacity: '1', transform: 'translateY(0)' },
+            },
+            slideIn: {
+              '0%': { transform: 'translateX(100%)', opacity: '0' },
+              '100%': { transform: 'translateX(0)', opacity: '1' },
+            },
+            shake: {
+              '10%, 90%': { transform: 'translate3d(-1px, 0, 0)' },
+              '20%, 80%': { transform: 'translate3d(2px, 0, 0)' },
+              '30%, 50%, 70%': { transform: 'translate3d(-3px, 0, 0)' },
+              '40%, 60%': { transform: 'translate3d(3px, 0, 0)' },
+            },
+            laserScan: {
+              '0%, 100%': { top: '5%' },
+              '50%': { top: '92%' },
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- React 18 & Babel Standalone CDN -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Canvas Confetti for Celebration Feedback -->
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.4/dist/confetti.browser.min.js"></script>
+
+  <!-- html5-qrcode for Live Webcam Barcode & QR code scanning -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+  <style>
+    body {
+      background-color: #030712;
+      color: #f3f4f6;
+    }
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #475569;
+    }
+    /* Hide html5-qrcode default UI noise */
+    #qr-reader-container video {
+      border-radius: 0.75rem;
+      object-fit: cover !important;
+      width: 100% !important;
+      height: 100% !important;
+    }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-950 font-sans antialiased selection:bg-blue-600 selection:text-white">
+  <div id="root"></div>
+
+  <!-- Main Application Script -->
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+    // --- WEB AUDIO API CHIME & WARNING ---
+    let audioCtx = null;
+    const getAudioCtx = () => {
+      try {
+        if (!audioCtx) {
+          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+          if (AudioContextClass) audioCtx = new AudioContextClass();
+        }
+        if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+        return audioCtx;
+      } catch (e) {
+        return null;
+      }
+    };
+
+    const playSuccessChime = () => {
+      const ctx = getAudioCtx();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      // D5 Note (587.33 Hz)
+      const osc1 = ctx.createOscillator();
+      const gain1 = ctx.createGain();
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(587.33, now);
+      gain1.gain.setValueAtTime(0.18, now);
+      gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+      osc1.connect(gain1);
+      gain1.connect(ctx.destination);
+      osc1.start(now);
+      osc1.stop(now + 0.22);
+
+      // A5 Note (880 Hz)
+      const osc2 = ctx.createOscillator();
+      const gain2 = ctx.createGain();
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(880, now + 0.1);
+      gain2.gain.setValueAtTime(0.24, now + 0.1);
+      gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+      osc2.start(now + 0.1);
+      osc2.stop(now + 0.5);
+    };
+
+    const playWarningTone = () => {
+      const ctx = getAudioCtx();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(220, now);
+      osc.frequency.linearRampToValueAtTime(170, now + 0.25);
+      gain.gain.setValueAtTime(0.14, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.32);
+    };
+
+    // --- PRN BACKEND DATABASE MATRIX (Req 1) ---
+    // Maps each College PRN (Permanent Registration Number) to full profile
+    const INITIAL_STUDENTS = [
+      { id: 'std-001', prn: 'PRN2022001', collegeId: 'PRN2022001', name: 'Aarav Sharma', email: 'aarav.sharma@campus.edu', phone: '9876543210', year: '3rd Year', branch: 'Computer Science & Engineering', isPresent: true, checkInTime: '09:15 AM', avatarBg: 'bg-blue-600' },
+      { id: 'std-002', prn: 'PRN2023015', collegeId: 'PRN2023015', name: 'Diya Patel', email: 'diya.patel@campus.edu', phone: '9876543211', year: '2nd Year', branch: 'Electronics & Communication', isPresent: true, checkInTime: '09:22 AM', avatarBg: 'bg-emerald-600' },
+      { id: 'std-003', prn: 'PRN2021034', collegeId: 'PRN2021034', name: 'Rohan Verma', email: 'rohan.verma@campus.edu', phone: '9876543212', year: '4th Year', branch: 'Mechanical Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-purple-600' },
+      { id: 'std-004', prn: 'PRN2024008', collegeId: 'PRN2024008', name: 'Ananya Iyer', email: 'ananya.iyer@campus.edu', phone: '9876543213', year: '1st Year', branch: 'Information Technology', isPresent: true, checkInTime: '09:30 AM', avatarBg: 'bg-rose-600' },
+      { id: 'std-005', prn: 'PRN2022055', collegeId: 'PRN2022055', name: 'Kabir Mehta', email: 'kabir.mehta@campus.edu', phone: '9876543214', year: '3rd Year', branch: 'Computer Science & Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-indigo-600' },
+      { id: 'std-006', prn: 'PRN2023042', collegeId: 'PRN2023042', name: 'Sneha Kulkarni', email: 'sneha.kulkarni@campus.edu', phone: '9876543215', year: '2nd Year', branch: 'Data Science & AI', isPresent: true, checkInTime: '09:41 AM', avatarBg: 'bg-cyan-600' },
+      { id: 'std-007', prn: 'PRN2021089', collegeId: 'PRN2021089', name: 'Vikramaditya Rao', email: 'vikram.rao@campus.edu', phone: '9876543216', year: '4th Year', branch: 'Electrical Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-amber-600' },
+      { id: 'std-008', prn: 'PRN2024021', collegeId: 'PRN2024021', name: 'Pooja Nair', email: 'pooja.nair@campus.edu', phone: '9876543217', year: '1st Year', branch: 'Computer Science & Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-pink-600' },
+      { id: 'std-009', prn: 'PRN2022072', collegeId: 'PRN2022072', name: 'Aditya Deshmukh', email: 'aditya.deshmukh@campus.edu', phone: '9876543218', year: '3rd Year', branch: 'Electronics & Communication', isPresent: true, checkInTime: '09:45 AM', avatarBg: 'bg-teal-600' },
+      { id: 'std-010', prn: 'PRN2023067', collegeId: 'PRN2023067', name: 'Meera Nambiar', email: 'meera.nambiar@campus.edu', phone: '9876543219', year: '2nd Year', branch: 'Civil Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-orange-600' },
+      { id: 'std-011', prn: 'PRN2021012', collegeId: 'PRN2021012', name: 'Arjun Singhania', email: 'arjun.singhania@campus.edu', phone: '9876543220', year: '4th Year', branch: 'Computer Science & Engineering', isPresent: true, checkInTime: '09:50 AM', avatarBg: 'bg-blue-700' },
+      { id: 'std-012', prn: 'PRN2024033', collegeId: 'PRN2024033', name: 'Tanvi Joshi', email: 'tanvi.joshi@campus.edu', phone: '9876543221', year: '1st Year', branch: 'Mechanical Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-violet-600' },
+      { id: 'std-013', prn: 'PRN2022090', collegeId: 'PRN2022090', name: 'Siddharth Chawla', email: 'siddharth.chawla@campus.edu', phone: '9876543222', year: '3rd Year', branch: 'Information Technology', isPresent: true, checkInTime: '09:55 AM', avatarBg: 'bg-emerald-700' },
+      { id: 'std-014', prn: 'PRN2023088', collegeId: 'PRN2023088', name: 'Ishita Banerjee', email: 'ishita.banerjee@campus.edu', phone: '9876543223', year: '2nd Year', branch: 'Data Science & AI', isPresent: false, checkInTime: null, avatarBg: 'bg-red-600' },
+      { id: 'std-015', prn: 'PRN2021054', collegeId: 'PRN2021054', name: 'Harsh Vardhan', email: 'harsh.vardhan@campus.edu', phone: '9876543224', year: '4th Year', branch: 'Mechanical Engineering', isPresent: true, checkInTime: '10:02 AM', avatarBg: 'bg-stone-600' },
+      { id: 'std-016', prn: 'PRN2024045', collegeId: 'PRN2024045', name: 'Rhea Sen', email: 'rhea.sen@campus.edu', phone: '9876543225', year: '1st Year', branch: 'Electronics & Communication', isPresent: false, checkInTime: null, avatarBg: 'bg-fuchsia-600' },
+      { id: 'std-017', prn: 'PRN2022104', collegeId: 'PRN2022104', name: 'Karan Kapoor', email: 'karan.kapoor@campus.edu', phone: '9876543226', year: '3rd Year', branch: 'Electrical Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-sky-600' },
+      { id: 'std-018', prn: 'PRN2023112', collegeId: 'PRN2023112', name: 'Zoya Khan', email: 'zoya.khan@campus.edu', phone: '9876543227', year: '2nd Year', branch: 'Computer Science & Engineering', isPresent: true, checkInTime: '10:08 AM', avatarBg: 'bg-pink-700' },
+      { id: 'std-019', prn: 'PRN2021098', collegeId: 'PRN2021098', name: 'Nikhil Reddy', email: 'nikhil.reddy@campus.edu', phone: '9876543228', year: '4th Year', branch: 'Civil Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-amber-700' },
+      { id: 'std-020', prn: 'PRN2024062', collegeId: 'PRN2024062', name: 'Bhavna Bhatt', email: 'bhavna.bhatt@campus.edu', phone: '9876543229', year: '1st Year', branch: 'Data Science & AI', isPresent: false, checkInTime: null, avatarBg: 'bg-lime-600' },
+      { id: 'std-021', prn: 'PRN2022131', collegeId: 'PRN2022131', name: 'Varun Nair', email: 'varun.nair@campus.edu', phone: '9876543230', year: '3rd Year', branch: 'Mechanical Engineering', isPresent: true, checkInTime: '10:14 AM', avatarBg: 'bg-blue-800' },
+      { id: 'std-022', prn: 'PRN2023135', collegeId: 'PRN2023135', name: 'Kriti Aggarwal', email: 'kriti.aggarwal@campus.edu', phone: '9876543231', year: '2nd Year', branch: 'Information Technology', isPresent: false, checkInTime: null, avatarBg: 'bg-teal-700' },
+      { id: 'std-023', prn: 'PRN2021142', collegeId: 'PRN2021142', name: 'Devansh Trivedi', email: 'devansh.trivedi@campus.edu', phone: '9876543232', year: '4th Year', branch: 'Electronics & Communication', isPresent: true, checkInTime: '10:19 AM', avatarBg: 'bg-purple-700' },
+      { id: 'std-024', prn: 'PRN2024078', collegeId: 'PRN2024078', name: 'Pallavi Sengupta', email: 'pallavi.sengupta@campus.edu', phone: '9876543233', year: '1st Year', branch: 'Electrical Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-rose-700' },
+      { id: 'std-025', prn: 'PRN2022156', collegeId: 'PRN2022156', name: 'Gaurav Gill', email: 'gaurav.gill@campus.edu', phone: '9876543234', year: '3rd Year', branch: 'Computer Science & Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-indigo-700' },
+      { id: 'std-026', prn: 'PRN2023160', collegeId: 'PRN2023160', name: 'Shalini Murthy', email: 'shalini.murthy@campus.edu', phone: '9876543235', year: '2nd Year', branch: 'Mechanical Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-emerald-800' },
+      { id: 'std-027', prn: 'PRN2021175', collegeId: 'PRN2021175', name: 'Abhishek Pandey', email: 'abhishek.pandey@campus.edu', phone: '9876543236', year: '4th Year', branch: 'Information Technology', isPresent: true, checkInTime: '10:25 AM', avatarBg: 'bg-cyan-700' },
+      { id: 'std-028', prn: 'PRN2024094', collegeId: 'PRN2024094', name: 'Nehal Mathur', email: 'nehal.mathur@campus.edu', phone: '9876543237', year: '1st Year', branch: 'Civil Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-orange-700' },
+      { id: 'std-029', prn: 'PRN2022188', collegeId: 'PRN2022188', name: 'Yash Saxena', email: 'yash.saxena@campus.edu', phone: '9876543238', year: '3rd Year', branch: 'Data Science & AI', isPresent: false, checkInTime: null, avatarBg: 'bg-violet-700' },
+      { id: 'std-030', prn: 'PRN2023192', collegeId: 'PRN2023192', name: 'Sanya Mirza', email: 'sanya.mirza@campus.edu', phone: '9876543239', year: '2nd Year', branch: 'Computer Science & Engineering', isPresent: true, checkInTime: '10:31 AM', avatarBg: 'bg-fuchsia-700' },
+      { id: 'std-031', prn: 'PRN2021205', collegeId: 'PRN2021205', name: 'Pranav Menon', email: 'pranav.menon@campus.edu', phone: '9876543240', year: '4th Year', branch: 'Electrical Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-amber-800' },
+      { id: 'std-032', prn: 'PRN2024107', collegeId: 'PRN2024107', name: 'Simran Walia', email: 'simran.walia@campus.edu', phone: '9876543241', year: '1st Year', branch: 'Computer Science & Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-blue-900' },
+      { id: 'std-033', prn: 'PRN2022214', collegeId: 'PRN2022214', name: 'Manish Rawat', email: 'manish.rawat@campus.edu', phone: '9876543242', year: '3rd Year', branch: 'Electronics & Communication', isPresent: false, checkInTime: null, avatarBg: 'bg-green-700' },
+      { id: 'std-034', prn: 'PRN2023225', collegeId: 'PRN2023225', name: 'Tara Srinivasan', email: 'tara.srinivasan@campus.edu', phone: '9876543243', year: '2nd Year', branch: 'Mechanical Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-pink-800' },
+      { id: 'std-035', prn: 'PRN2021239', collegeId: 'PRN2021239', name: 'Rahul Nambiar', email: 'rahul.nambiar@campus.edu', phone: '9876543244', year: '4th Year', branch: 'Data Science & AI', isPresent: true, checkInTime: '10:38 AM', avatarBg: 'bg-indigo-800' },
+      { id: 'std-036', prn: 'PRN2024122', collegeId: 'PRN2024122', name: 'Divya Goswami', email: 'divya.goswami@campus.edu', phone: '9876543245', year: '1st Year', branch: 'Information Technology', isPresent: false, checkInTime: null, avatarBg: 'bg-rose-800' },
+      { id: 'std-037', prn: 'PRN2022240', collegeId: 'PRN2022240', name: 'Kunal Singhal', email: 'kunal.singhal@campus.edu', phone: '9876543246', year: '3rd Year', branch: 'Civil Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-teal-800' },
+      { id: 'std-038', prn: 'PRN2023258', collegeId: 'PRN2023258', name: 'Anwita Mukherjee', email: 'anwita.mukherjee@campus.edu', phone: '9876543247', year: '2nd Year', branch: 'Electronics & Communication', isPresent: true, checkInTime: '10:44 AM', avatarBg: 'bg-purple-800' },
+      { id: 'std-039', prn: 'PRN2021262', collegeId: 'PRN2021262', name: 'Deepak Choudhury', email: 'deepak.choudhury@campus.edu', phone: '9876543248', year: '4th Year', branch: 'Computer Science & Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-emerald-900' },
+      { id: 'std-040', prn: 'PRN2024140', collegeId: 'PRN2024140', name: 'Garima Rajput', email: 'garima.rajput@campus.edu', phone: '9876543249', year: '1st Year', branch: 'Electrical Engineering', isPresent: false, checkInTime: null, avatarBg: 'bg-yellow-700' },
+    ];
+
+    const STORAGE_KEY = 'event_attendance_students_v3';
+
+    // --- LOCALSTORAGE HELPERS (Req 5) ---
+    const getStoredStudents = () => {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_STUDENTS));
+          return INITIAL_STUDENTS;
+        }
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_STUDENTS));
+        return INITIAL_STUDENTS;
+      } catch (e) {
+        return INITIAL_STUDENTS;
+      }
+    };
+
+    const saveStoredStudents = (data) => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      } catch (e) {}
+    };
+
+    // --- TOAST CONTAINER ---
+    const ToastLayer = ({ toasts, onDismiss }) => (
+      <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none">
+        {toasts.map(t => (
+          <div
+            key={t.id}
+            className={`pointer-events-auto flex items-start gap-3 p-4 rounded-xl border shadow-xl backdrop-blur-md transition-all animate-slide-in ${
+              t.type === 'success' ? 'bg-emerald-950/95 border-emerald-500 text-emerald-100' :
+              t.type === 'warning' ? 'bg-amber-950/95 border-amber-500 text-amber-100' :
+              t.type === 'error' ? 'bg-rose-950/95 border-rose-500 text-rose-100' :
+              'bg-blue-950/95 border-blue-500 text-blue-100'
+            }`}
+          >
+            <div className="w-7 h-7 rounded-full flex items-center justify-center font-bold text-sm bg-white/10 shrink-0">
+              {t.type === 'success' ? '✓' : t.type === 'warning' ? '⚠' : t.type === 'error' ? '✕' : 'ℹ'}
+            </div>
+            <div className="flex-1 min-w-0">
+              <h4 className="font-semibold text-sm leading-tight text-white">{t.title}</h4>
+              {t.description && <p className="text-xs mt-1 text-slate-200">{t.description}</p>}
+            </div>
+            <button onClick={() => onDismiss(t.id)} className="text-white/60 hover:text-white text-base leading-none p-1 rounded">×</button>
+          </div>
+        ))}
+      </div>
+    );
+
+    // --- COMPONENT: STUDENT ID BARCODE CARD GENERATOR MODAL ---
+    const BarcodeGeneratorModal = ({ isOpen, onClose, students, onSelectPrnToScan }) => {
+      if (!isOpen) return null;
+      const [selectedId, setSelectedId] = useState(students[0]?.id);
+      const student = students.find(s => s.id === selectedId) || students[0];
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl shadow-2xl max-w-md w-full p-6 relative">
+            <button onClick={onClose} className="absolute top-4 right-4 text-slate-400 hover:text-white text-lg p-1 rounded-lg hover:bg-slate-800">✕</button>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30 flex items-center justify-center text-lg font-bold">🪪</div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Student ID Barcode Card</h3>
+                <p className="text-xs text-slate-400">Generate ID barcodes to test camera & simulation</p>
+              </div>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Select Student</label>
+              <select
+                value={selectedId}
+                onChange={e => setSelectedId(e.target.value)}
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-white focus:outline-none focus:border-blue-500"
+              >
+                {students.map(s => (
+                  <option key={s.id} value={s.id}>{s.name} ({s.prn}) - {s.branch}</option>
+                ))}
+              </select>
+            </div>
+
+            {student && (
+              <div className="bg-gradient-to-br from-slate-800 to-slate-900 border-2 border-slate-700 rounded-2xl p-5 shadow-2xl space-y-4 text-center">
+                <div className="flex items-center justify-between border-b border-slate-700/80 pb-2">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400">CAMPUS INSTITUTE OF TECH</span>
+                  <span className="text-[9px] px-2 py-0.5 rounded bg-blue-900/60 text-blue-300 font-mono">STUDENT ID</span>
+                </div>
+
+                <div className="flex items-center gap-3 text-left">
+                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center font-bold text-white text-lg ${student.avatarBg || 'bg-blue-600'}`}>
+                    {student.name.charAt(0)}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h4 className="font-bold text-base text-white truncate">{student.name}</h4>
+                    <p className="text-xs text-emerald-400 font-mono font-bold">PRN: {student.prn}</p>
+                    <p className="text-[11px] text-slate-400 truncate">{student.branch} • {student.year}</p>
+                  </div>
+                </div>
+
+                {/* High-Contrast SVG 1D Barcode */}
+                <div className="bg-white p-3 rounded-xl shadow-md flex flex-col items-center justify-center">
+                  <div className="flex items-end justify-center h-12 gap-[3px] w-full px-2 overflow-hidden">
+                    {[2, 1, 3, 1, 2, 4, 1, 2, 3, 1, 2, 1, 3, 2, 1, 4, 2, 1, 3, 1, 2, 3, 1, 2, 1, 3, 2, 1].map((weight, i) => (
+                      <div key={i} className="bg-black" style={{ width: `${weight * 2.2}px`, height: i % 4 === 0 ? '100%' : '85%' }} />
+                    ))}
+                  </div>
+                  <span className="text-xs font-mono font-black text-black tracking-widest mt-1">*{student.prn}*</span>
+                </div>
+
+                <button
+                  onClick={() => {
+                    onSelectPrnToScan(student.prn);
+                    onClose();
+                  }}
+                  className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-emerald-600/30 transition active:scale-95"
+                >
+                  ⚡ Simulate Camera Scan ({student.prn})
+                </button>
+              </div>
+            )}
+
+            <div className="mt-4 pt-3 border-t border-slate-800 text-center">
+              <button
+                onClick={() => {
+                  onSelectPrnToScan('PRN9999999');
+                  onClose();
+                }}
+                className="text-xs text-rose-400 hover:text-rose-300 font-semibold underline"
+              >
+                Or Test Unregistered PRN (PRN9999999) →
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // --- COMPONENT: LIVE CAMERA SCANNER (Req 2) ---
+    const CameraScanner = ({ onScan, isScanning, setIsScanning, lastScannedPrn }) => {
+      const [cameraError, setCameraError] = useState(null);
+      const [isCameraActive, setIsCameraActive] = useState(false);
+      const scannerRef = useRef(null);
+      const lastScanTimeRef = useRef(0);
+
+      const startCamera = async () => {
+        setCameraError(null);
+        if (!window.Html5Qrcode) {
+          setCameraError('Scanning library loading. Please click retry in a moment.');
+          return;
+        }
+
+        try {
+          if (scannerRef.current) {
+            try { await scannerRef.current.stop(); } catch(e) {}
+          }
+
+          const html5QrCode = new window.Html5Qrcode('qr-reader-container');
+          scannerRef.current = html5QrCode;
+
+          const config = {
+            fps: 15,
+            qrbox: { width: 280, height: 180 },
+            aspectRatio: 1.333333,
+          };
+
+          await html5QrCode.start(
+            { facingMode: 'environment' },
+            config,
+            (decodedText) => {
+              const now = Date.now();
+              // Prevent duplicate triggers within 1.5 seconds
+              if (now - lastScanTimeRef.current > 1500) {
+                lastScanTimeRef.current = now;
+                onScan(decodedText.trim());
+              }
+            },
+            () => {}
+          );
+
+          setIsCameraActive(true);
+          setIsScanning(true);
+        } catch (err) {
+          console.warn('Webcam stream error:', err);
+          setIsCameraActive(false);
+          setIsScanning(false);
+          setCameraError(err?.message || 'Unable to access webcam. Please check browser permission or use manual PRN input.');
+        }
+      };
+
+      const stopCamera = async () => {
+        if (scannerRef.current) {
+          try {
+            await scannerRef.current.stop();
+            await scannerRef.current.clear();
+          } catch (e) {}
+          scannerRef.current = null;
+        }
+        setIsCameraActive(false);
+        setIsScanning(false);
+      };
+
+      useEffect(() => {
+        return () => {
+          if (scannerRef.current) {
+            scannerRef.current.stop().catch(() => {}).finally(() => {
+              scannerRef.current = null;
+            });
+          }
+        };
+      }, []);
+
+      return (
+        <div className="bg-slate-900 border border-slate-700/80 rounded-2xl p-5 shadow-2xl space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30 flex items-center justify-center text-lg font-bold">
+                📷
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <span>Live Webcam Barcode & QR Scanner</span>
+                  {isCameraActive ? (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 animate-pulse">
+                      Live Stream Active
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-slate-800 text-slate-400 border border-slate-700">
+                      Standby
+                    </span>
+                  )}
+                </h3>
+                <p className="text-xs text-slate-400">Position student ID card barcode in front of camera lens</p>
+              </div>
+            </div>
+
+            <div>
+              {isCameraActive ? (
+                <button
+                  onClick={stopCamera}
+                  className="px-4 py-2 bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/40 rounded-xl text-xs font-semibold transition active:scale-95 flex items-center gap-1.5"
+                >
+                  <span>⏹</span>
+                  <span>Stop Camera</span>
+                </button>
+              ) : (
+                <button
+                  onClick={startCamera}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-blue-600/30 transition active:scale-95 flex items-center gap-1.5"
+                >
+                  <span>▶</span>
+                  <span>Start Camera Scanner</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Camera Viewport */}
+          <div className="relative w-full aspect-video sm:h-72 bg-slate-950 rounded-xl overflow-hidden border-2 border-slate-800 flex items-center justify-center">
+            <div id="qr-reader-container" className="w-full h-full object-cover"></div>
+
+            {/* Viewfinder Target & Laser Scanline */}
+            {isCameraActive && (
+              <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center p-4">
+                <div className="relative w-64 sm:w-72 h-40 sm:h-44 border-2 border-dashed border-blue-400/70 rounded-xl shadow-2xl flex items-center justify-center">
+                  <div className="absolute -top-1 -left-1 w-5 h-5 border-t-4 border-l-4 border-emerald-400 rounded-tl-md"></div>
+                  <div className="absolute -top-1 -right-1 w-5 h-5 border-t-4 border-r-4 border-emerald-400 rounded-tr-md"></div>
+                  <div className="absolute -bottom-1 -left-1 w-5 h-5 border-b-4 border-l-4 border-emerald-400 rounded-bl-md"></div>
+                  <div className="absolute -bottom-1 -right-1 w-5 h-5 border-b-4 border-r-4 border-emerald-400 rounded-br-md"></div>
+
+                  {/* Animated Laser Beam */}
+                  <div className="absolute inset-x-0 h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_12px_#34d399] animate-laser-scan"></div>
+
+                  <span className="text-[11px] font-semibold text-emerald-300 bg-slate-950/80 px-2.5 py-0.5 rounded-full border border-emerald-500/30">
+                    Align Barcode / QR Here
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Inactive Standby Card */}
+            {!isCameraActive && (
+              <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center p-6 text-center space-y-3">
+                <div className="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-700 flex items-center justify-center text-2xl text-blue-400 shadow-inner">
+                  📷
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-white">Camera Scanner in Standby</h4>
+                  <p className="text-xs text-slate-400 max-w-xs mx-auto mt-1">
+                    Click "Start Camera Scanner" to enable live webcam recognition, or test with the barcode simulator & text backup below.
+                  </p>
+                </div>
+                <button
+                  onClick={startCamera}
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-blue-600/30 transition active:scale-95"
+                >
+                  Enable Live Webcam
+                </button>
+              </div>
+            )}
+
+            {cameraError && (
+              <div className="absolute bottom-3 inset-x-3 bg-rose-950/90 border border-rose-500/50 text-rose-200 text-xs p-3 rounded-xl flex items-center gap-2">
+                <span>⚠</span>
+                <span className="flex-1">{cameraError}</span>
+                <button onClick={() => setCameraError(null)} className="text-rose-400 hover:text-white">✕</button>
+              </div>
+            )}
+
+            {lastScannedPrn && (
+              <div className="absolute top-3 left-3 right-3 bg-slate-900/90 border border-blue-500/40 px-3 py-1.5 rounded-lg flex items-center justify-between text-xs animate-fade-in">
+                <span className="text-slate-300">
+                  Scanned Raw PRN: <strong className="text-emerald-400 font-mono font-bold">{lastScannedPrn}</strong>
+                </span>
+                <span className="text-emerald-400 font-bold">✓ Decoded</span>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    // --- COMPONENT: STUDENT PROFILE CARD (Req 3) ---
+    const StudentProfileCard = ({ student, onMarkPresent, onUndoCheckIn }) => {
+      const initials = student.name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
+
+      return (
+        <div className="bg-slate-900/95 border border-slate-700 rounded-2xl p-6 sm:p-8 shadow-2xl backdrop-blur-md relative overflow-hidden transition-all animate-fade-in">
+          <div className={`absolute top-0 right-0 w-80 h-80 rounded-full blur-3xl -z-10 pointer-events-none opacity-20 ${student.isPresent ? 'bg-emerald-500' : 'bg-blue-500'}`} />
+
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6 pb-6 border-b border-slate-800">
+            <div className="flex items-center gap-4">
+              <div className={`w-16 h-16 sm:w-20 sm:h-20 rounded-2xl flex items-center justify-center font-bold text-2xl text-white shadow-xl ${student.avatarBg || 'bg-blue-600'}`}>
+                {initials}
+              </div>
+              <div>
+                <div className="flex flex-wrap items-center gap-2 mb-1">
+                  <h3 className="text-2xl font-bold text-white tracking-tight">{student.name}</h3>
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-blue-950/90 text-blue-400 border border-blue-700/60">
+                    PRN: {student.prn || student.collegeId}
+                  </span>
+                </div>
+                <p className="text-sm text-slate-400 font-medium">
+                  {student.branch} • <span className="text-slate-300 font-semibold">{student.year}</span>
+                </p>
+              </div>
+            </div>
+
+            <div>
+              {student.isPresent ? (
+                <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 font-semibold text-sm shadow-lg shadow-emerald-950/40">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>Verified & Present</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-400 font-semibold text-sm">
+                  <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
+                  <span>Not Yet Checked In</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 py-6 text-sm">
+            <div className="p-3.5 bg-slate-800/60 rounded-xl border border-slate-800">
+              <span className="text-xs uppercase font-semibold text-slate-400 block mb-1">Email ID</span>
+              <a href={`mailto:${student.email}`} className="text-white font-medium hover:text-blue-400 transition break-all">
+                {student.email}
+              </a>
+            </div>
+
+            <div className="p-3.5 bg-slate-800/60 rounded-xl border border-slate-800">
+              <span className="text-xs uppercase font-semibold text-slate-400 block mb-1">Academic Year</span>
+              <span className="text-white font-semibold">{student.year}</span>
+            </div>
+
+            <div className="p-3.5 bg-slate-800/60 rounded-xl border border-slate-800">
+              <span className="text-xs uppercase font-semibold text-slate-400 block mb-1">Department Branch</span>
+              <span className="text-white font-medium truncate block" title={student.branch}>
+                {student.branch}
+              </span>
+            </div>
+
+            <div className="p-3.5 bg-slate-800/60 rounded-xl border border-slate-800">
+              <span className="text-xs uppercase font-semibold text-slate-400 block mb-1">Gate Check-in Time</span>
+              <span className={`font-semibold font-mono ${student.checkInTime ? 'text-emerald-400' : 'text-slate-500'}`}>
+                {student.checkInTime || 'Not checked in yet'}
+              </span>
+            </div>
+          </div>
+
+          <div className="pt-4 flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-slate-800">
+            <div className="text-xs text-slate-400">
+              {student.isPresent ? (
+                <span>Verified attendee admitted at <strong className="text-white font-mono">{student.checkInTime}</strong></span>
+              ) : (
+                <span>Credentials verified from PRN matrix. Click button below to mark Present.</span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3 w-full sm:w-auto">
+              {student.isPresent ? (
+                <button
+                  onClick={() => onUndoCheckIn(student.id)}
+                  className="w-full sm:w-auto px-5 py-3 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold transition"
+                >
+                  Undo Check-In
+                </button>
+              ) : (
+                <button
+                  onClick={() => onMarkPresent(student.id)}
+                  className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-base shadow-xl shadow-emerald-600/30 transition transform active:scale-95"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span>Mark as Present</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // --- COMPONENT: GATE ENTRY DESK WITH CAMERA & PRN WORKFLOW (Req 2, 3, 4) ---
+    const GateDesk = ({ students, onMarkPresent, onUndoCheckIn, onAddStudent, showToast }) => {
+      const [manualPrn, setManualPrn] = useState('');
+      const [searchedPrn, setSearchedPrn] = useState(null);
+      const [activeStudent, setActiveStudent] = useState(null);
+      const [isNotFound, setIsNotFound] = useState(false);
+      const [isCameraScanning, setIsCameraScanning] = useState(false);
+      const [lastScannedPrn, setLastScannedPrn] = useState(null);
+      const [isIdGeneratorOpen, setIsIdGeneratorOpen] = useState(false);
+      const [isWalkInOpen, setIsWalkInOpen] = useState(false);
+
+      // Exact PRN lookup in database matrix
+      const lookupPrnInMatrix = (rawPrn) => {
+        const trimmed = rawPrn.trim().toUpperCase();
+        if (!trimmed) return;
+
+        setSearchedPrn(trimmed);
+        setLastScannedPrn(trimmed);
+
+        const match = students.find(
+          s => (s.prn && s.prn.toUpperCase() === trimmed) || (s.collegeId && s.collegeId.toUpperCase() === trimmed)
+        );
+
+        if (match) {
+          setActiveStudent(match);
+          setIsNotFound(false);
+          playSuccessChime();
+          showToast('info', 'PRN Matched', `${match.name} (${trimmed}) profile loaded.`);
+        } else {
+          setActiveStudent(null);
+          setIsNotFound(true);
+          playWarningTone();
+          showToast('warning', 'PRN Not Registered', `PRN "${trimmed}" not found in database.`);
+        }
+      };
+
+      const handleCameraScan = (decodedText) => {
+        setManualPrn(decodedText);
+        lookupPrnInMatrix(decodedText);
+      };
+
+      const handleManualSubmit = (e) => {
+        e.preventDefault();
+        lookupPrnInMatrix(manualPrn);
+      };
+
+      const handleClear = () => {
+        setManualPrn('');
+        setSearchedPrn(null);
+        setActiveStudent(null);
+        setIsNotFound(false);
+        setLastScannedPrn(null);
+      };
+
+      const handleMarkWithFeedback = (studentId) => {
+        const student = students.find(s => s.id === studentId);
+        if (!student) return;
+
+        onMarkPresent(studentId);
+        playSuccessChime();
+
+        if (window.confetti) {
+          window.confetti({ particleCount: 90, spread: 70, origin: { y: 0.6 } });
+        }
+
+        const nowStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        setActiveStudent(prev => prev && prev.id === studentId ? { ...prev, isPresent: true, checkInTime: nowStr } : prev);
+        showToast('success', 'Verified & Present!', `${student.name} (PRN: ${student.prn}) marked Present.`);
+      };
+
+      const handleUndoWithFeedback = (studentId) => {
+        const student = students.find(s => s.id === studentId);
+        if (!student) return;
+
+        onUndoCheckIn(studentId);
+        setActiveStudent(prev => prev && prev.id === studentId ? { ...prev, isPresent: false, checkInTime: null } : prev);
+        showToast('info', 'Check-In Reverted', `${student.name} marked as Not Yet Checked In.`);
+      };
+
+      return (
+        <div className="max-w-4xl mx-auto space-y-6">
+          <div className="text-center space-y-2">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-semibold uppercase tracking-wider">
+              <span className="w-2 h-2 rounded-full bg-blue-500 animate-ping" />
+              Live Barcode / QR Check-In Desk
+            </div>
+            <h2 className="text-3xl font-extrabold text-white tracking-tight sm:text-4xl">
+              Gate Entry Verification Desk
+            </h2>
+            <p className="text-slate-400 text-sm max-w-lg mx-auto">
+              Scan attendee ID card barcode/QR using the live camera, or enter their PRN below for instant profile lookup.
+            </p>
+          </div>
+
+          {/* 1. CAMERA VIEW WINDOW (Req 2) */}
+          <CameraScanner
+            onScan={handleCameraScan}
+            isScanning={isCameraScanning}
+            setIsScanning={setIsCameraScanning}
+            lastScannedPrn={lastScannedPrn}
+          />
+
+          {/* 2. TEXT BACKUP: MANUAL PRN INPUT (Req 4) */}
+          <div className="bg-slate-900/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                <span>⌨️ Manual PRN Text Backup</span>
+                <span className="text-[11px] font-normal text-slate-400 hidden sm:inline">
+                  (Use if barcode is damaged or camera cannot focus)
+                </span>
+              </label>
+              <button
+                type="button"
+                onClick={() => setIsIdGeneratorOpen(true)}
+                className="text-xs text-blue-400 hover:text-blue-300 font-semibold flex items-center gap-1"
+              >
+                <span>🪪 Test Barcode Generator</span>
+              </button>
+            </div>
+
+            <form onSubmit={handleManualSubmit} className="flex flex-col sm:flex-row gap-2.5">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  value={manualPrn}
+                  onChange={e => setManualPrn(e.target.value)}
+                  placeholder="Enter PRN Number (e.g. PRN2022001 or PRN2021034)..."
+                  className="w-full uppercase font-mono py-3 px-4 bg-slate-800 border border-slate-700 rounded-xl text-white placeholder-slate-500 text-sm sm:text-base focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+                {manualPrn && (
+                  <button
+                    type="button"
+                    onClick={handleClear}
+                    className="absolute right-3 inset-y-0 flex items-center text-slate-400 hover:text-white text-sm"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              <button
+                type="submit"
+                className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm rounded-xl shadow-lg shadow-blue-600/30 transition flex items-center justify-center gap-2 shrink-0 active:scale-95"
+              >
+                <span>Lookup PRN</span>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            </form>
+
+            <div className="pt-2 flex flex-wrap items-center gap-2 text-xs text-slate-400 border-t border-slate-800">
+              <span className="font-semibold text-slate-500">Quick Test PRNs:</span>
+              <button
+                type="button"
+                onClick={() => { setManualPrn('PRN2022001'); lookupPrnInMatrix('PRN2022001'); }}
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-mono transition"
+              >
+                PRN2022001 (Aarav)
+              </button>
+              <button
+                type="button"
+                onClick={() => { setManualPrn('PRN2021034'); lookupPrnInMatrix('PRN2021034'); }}
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-mono transition"
+              >
+                PRN2021034 (Rohan)
+              </button>
+              <button
+                type="button"
+                onClick={() => { setManualPrn('PRN2023015'); lookupPrnInMatrix('PRN2023015'); }}
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-mono transition"
+              >
+                PRN2023015 (Diya)
+              </button>
+              <button
+                type="button"
+                onClick={() => { setManualPrn('PRN9999999'); lookupPrnInMatrix('PRN9999999'); }}
+                className="px-2.5 py-1 rounded-lg bg-rose-950/50 hover:bg-rose-900/60 text-rose-300 border border-rose-800/40 font-mono transition"
+              >
+                PRN9999999 (Test Not Found)
+              </button>
+            </div>
+          </div>
+
+          {/* 3. SCANNED PRN LOOKUP WORKFLOW: VERIFICATION PANEL OR NOT FOUND ALERT (Req 3) */}
+          {activeStudent ? (
+            <div className="space-y-3 animate-fade-in">
+              <div className="flex items-center justify-between px-2 text-xs">
+                <span className="text-emerald-400 font-semibold flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                  PRN Database Match: <strong className="font-mono text-white">{searchedPrn}</strong>
+                </span>
+                <button onClick={handleClear} className="text-slate-400 hover:text-white underline text-xs">Clear & Scan Next</button>
+              </div>
+
+              <StudentProfileCard
+                student={activeStudent}
+                onMarkPresent={handleMarkWithFeedback}
+                onUndoCheckIn={handleUndoWithFeedback}
+              />
+            </div>
+          ) : isNotFound && searchedPrn ? (
+            <div className="bg-gradient-to-b from-rose-950/70 to-slate-900 border-2 border-rose-500/60 rounded-2xl p-8 text-center shadow-2xl animate-shake space-y-4">
+              <div className="w-16 h-16 rounded-2xl bg-rose-500/20 border border-rose-500/40 text-rose-400 mx-auto flex items-center justify-center text-3xl font-bold shadow-lg shadow-rose-900/30">
+                ⚠
+              </div>
+              <div>
+                <span className="px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                  Verification Failed
+                </span>
+                <h3 className="text-2xl sm:text-3xl font-extrabold text-white mt-2">
+                  PRN Not Registered
+                </h3>
+                <p className="text-slate-300 text-sm max-w-md mx-auto mt-2 leading-relaxed">
+                  The scanned PRN <strong className="text-rose-300 bg-rose-950 px-2 py-0.5 rounded border border-rose-800/60 font-mono text-base">"{searchedPrn}"</strong> was not found in the student database matrix.
+                </p>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+                <button
+                  onClick={handleClear}
+                  className="px-5 py-2.5 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-semibold transition"
+                >
+                  Scan Again
+                </button>
+                <button
+                  onClick={() => setIsWalkInOpen(true)}
+                  className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold shadow-lg shadow-blue-600/30 transition flex items-center gap-2 active:scale-95"
+                >
+                  <span>+ Register Walk-in Attendee</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-8 text-center text-slate-400 space-y-2">
+              <div className="text-2xl text-blue-400">⚡</div>
+              <h4 className="text-base font-bold text-white">Awaiting ID Barcode Scan</h4>
+              <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                Scan an ID card with the live camera above or type a PRN number. Profile data will auto-populate here.
+              </p>
+            </div>
+          )}
+
+          <BarcodeGeneratorModal
+            isOpen={isIdGeneratorOpen}
+            onClose={() => setIsIdGeneratorOpen(false)}
+            students={students}
+            onSelectPrnToScan={prn => {
+              setManualPrn(prn);
+              lookupPrnInMatrix(prn);
+            }}
+          />
+
+          <WalkInModal
+            isOpen={isWalkInOpen}
+            onClose={() => setIsWalkInOpen(false)}
+            initialQuery={searchedPrn || ''}
+            onRegister={newStudent => {
+              onAddStudent(newStudent);
+              lookupPrnInMatrix(newStudent.prn);
+              playSuccessChime();
+              showToast('success', 'Walk-in Registered', `${newStudent.name} registered with PRN ${newStudent.prn}.`);
+            }}
+          />
+        </div>
+      );
+    };
+
+    // --- COMPONENT: ALL REGISTRATIONS LIST ---
+    const RegistrationsList = ({ students, onToggleAttendance, onAddStudent, onResetData, onClearAttendance, showToast }) => {
+      const [searchQuery, setSearchQuery] = useState('');
+      const [selectedBranch, setSelectedBranch] = useState('ALL');
+      const [selectedYear, setSelectedYear] = useState('ALL');
+      const [selectedStatus, setSelectedStatus] = useState('ALL');
+      const [isWalkInOpen, setIsWalkInOpen] = useState(false);
+
+      const branchOptions = useMemo(() => {
+        const set = new Set();
+        students.forEach(s => set.add(s.branch));
+        return Array.from(set).sort();
+      }, [students]);
+
+      const yearOptions = useMemo(() => {
+        const set = new Set();
+        students.forEach(s => set.add(s.year));
+        return Array.from(set).sort();
+      }, [students]);
+
+      const filteredStudents = useMemo(() => {
+        const q = searchQuery.trim().toLowerCase();
+        return students.filter(student => {
+          const matchesSearch =
+            !q ||
+            student.name.toLowerCase().includes(q) ||
+            student.email.toLowerCase().includes(q) ||
+            (student.prn && student.prn.toLowerCase().includes(q)) ||
+            (student.collegeId && student.collegeId.toLowerCase().includes(q));
+
+          const matchesBranch = selectedBranch === 'ALL' || student.branch === selectedBranch;
+          const matchesYear = selectedYear === 'ALL' || student.year === selectedYear;
+          const matchesStatus =
+            selectedStatus === 'ALL' ||
+            (selectedStatus === 'PRESENT' && student.isPresent) ||
+            (selectedStatus === 'ABSENT' && !student.isPresent);
+
+          return matchesSearch && matchesBranch && matchesYear && matchesStatus;
+        });
+      }, [students, searchQuery, selectedBranch, selectedYear, selectedStatus]);
+
+      const handleExportCSV = () => {
+        if (students.length === 0) return;
+        const headers = ['ID', 'PRN', 'Name', 'Email', 'Phone', 'Year', 'Branch', 'Status', 'Check-in Time'];
+        const rows = filteredStudents.map(s => [
+          s.id,
+          `"${s.prn || s.collegeId}"`,
+          `"${s.name.replace(/"/g, '""')}"`,
+          `"${s.email}"`,
+          `"${s.phone}"`,
+          `"${s.year}"`,
+          `"${s.branch}"`,
+          s.isPresent ? 'Present' : 'Absent',
+          s.checkInTime ? `"${s.checkInTime}"` : 'N/A',
+        ]);
+
+        const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement('a');
+        link.setAttribute('href', encodedUri);
+        link.setAttribute('download', `event_attendance_${new Date().toISOString().slice(0, 10)}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        showToast('success', 'CSV Exported', `Downloaded ${filteredStudents.length} participant records.`);
+      };
+
+      return (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">All Registrations</h2>
+              <p className="text-slate-400 text-sm mt-0.5">
+                Displaying <span className="font-semibold text-white">{filteredStudents.length}</span> of <span className="font-semibold text-slate-300">{students.length}</span> registered attendees
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                onClick={() => setIsWalkInOpen(true)}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-lg shadow-blue-600/20 transition active:scale-95 flex items-center gap-1.5"
+              >
+                <span>+ Add Walk-In</span>
+              </button>
+
+              <button
+                onClick={handleExportCSV}
+                className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs sm:text-sm font-medium transition flex items-center gap-1.5"
+              >
+                <span className="text-emerald-400">📥</span>
+                <span>Export CSV</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  if (confirm('Restore initial mock registration list?')) {
+                    onResetData();
+                    showToast('info', 'Data Restored', 'Reset attendees to original mock dataset.');
+                  }
+                }}
+                className="px-3 py-2 bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700/80 rounded-xl text-xs font-medium transition"
+              >
+                Reset Default
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xl space-y-4">
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Search instantly by PRN, Student Name, or Email ID..."
+                className="w-full pl-11 pr-10 py-3 bg-slate-800/90 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition"
+              />
+              {searchQuery && (
+                <button onClick={() => setSearchQuery('')} className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-white">✕</button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1 uppercase tracking-wider">Filter Branch</label>
+                <select
+                  value={selectedBranch}
+                  onChange={e => setSelectedBranch(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option value="ALL">All Branches ({students.length})</option>
+                  {branchOptions.map(b => <option key={b} value={b}>{b}</option>)}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1 uppercase tracking-wider">Filter Academic Year</label>
+                <select
+                  value={selectedYear}
+                  onChange={e => setSelectedYear(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option value="ALL">All Years</option>
+                  {yearOptions.map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1 uppercase tracking-wider">Attendance Status</label>
+                <select
+                  value={selectedStatus}
+                  onChange={e => setSelectedStatus(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option value="ALL">All Statuses ({students.length})</option>
+                  <option value="PRESENT">Present Only ({students.filter(s => s.isPresent).length})</option>
+                  <option value="ABSENT">Absent Only ({students.filter(s => !s.isPresent).length})</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-slate-900/90 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm text-slate-300">
+                <thead className="bg-slate-800/80 text-xs uppercase font-semibold text-slate-400 tracking-wider border-b border-slate-800">
+                  <tr>
+                    <th className="py-3.5 px-4 sm:px-6">Participant</th>
+                    <th className="py-3.5 px-4">College PRN</th>
+                    <th className="py-3.5 px-4 hidden md:table-cell">Branch & Year</th>
+                    <th className="py-3.5 px-4 hidden lg:table-cell">Contact</th>
+                    <th className="py-3.5 px-4">Status</th>
+                    <th className="py-3.5 px-4 hidden sm:table-cell">Check-in Time</th>
+                    <th className="py-3.5 px-4 sm:px-6 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/80">
+                  {filteredStudents.length > 0 ? (
+                    filteredStudents.map(student => (
+                      <tr
+                        key={student.id}
+                        className={`hover:bg-slate-800/50 transition ${student.isPresent ? 'bg-emerald-950/10' : ''}`}
+                      >
+                        <td className="py-3.5 px-4 sm:px-6">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs text-white shrink-0 ${student.avatarBg || 'bg-blue-600'}`}>
+                              {student.name.charAt(0)}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="font-semibold text-white truncate">{student.name}</div>
+                              <div className="text-xs text-slate-400 truncate md:hidden">{student.branch} • {student.year}</div>
+                            </div>
+                          </div>
+                        </td>
+
+                        <td className="py-3.5 px-4">
+                          <span className="font-mono text-xs px-2.5 py-1 rounded bg-slate-800 text-blue-300 border border-slate-700 font-bold">
+                            {student.prn || student.collegeId}
+                          </span>
+                        </td>
+
+                        <td className="py-3.5 px-4 hidden md:table-cell">
+                          <div className="text-xs font-medium text-white truncate max-w-xs">{student.branch}</div>
+                          <div className="text-xs text-slate-400">{student.year}</div>
+                        </td>
+
+                        <td className="py-3.5 px-4 hidden lg:table-cell">
+                          <div className="text-xs text-slate-300 truncate max-w-[180px]">{student.email}</div>
+                          <div className="text-xs text-slate-500 font-mono">+91 {student.phone}</div>
+                        </td>
+
+                        <td className="py-3.5 px-4">
+                          {student.isPresent ? (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 border border-emerald-500/30 text-emerald-400">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                              Present
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-400">
+                              <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
+                              Absent
+                            </span>
+                          )}
+                        </td>
+
+                        <td className="py-3.5 px-4 hidden sm:table-cell text-xs text-slate-400 font-mono">
+                          {student.checkInTime || '—'}
+                        </td>
+
+                        <td className="py-3.5 px-4 sm:px-6 text-right">
+                          <button
+                            onClick={() => onToggleAttendance(student.id)}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition active:scale-95 ${
+                              student.isPresent
+                                ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
+                                : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20'
+                            }`}
+                          >
+                            {student.isPresent ? 'Mark Absent' : 'Mark Present'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={7} className="py-12 text-center text-slate-500">
+                        <div className="text-3xl mb-2">🔍</div>
+                        <div className="font-semibold text-slate-400">No participants match your search</div>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <WalkInModal
+            isOpen={isWalkInOpen}
+            onClose={() => setIsWalkInOpen(false)}
+            initialQuery={searchQuery}
+            onRegister={newStudent => {
+              onAddStudent(newStudent);
+              showToast('success', 'Participant Added', `${newStudent.name} registered with PRN ${newStudent.prn}.`);
+            }}
+          />
+        </div>
+      );
+    };
+
+    // --- COMPONENT: BONUS ANALYTICS DASHBOARD (Req 5) ---
+    const Dashboard = ({ students, onNavigateToGate, onNavigateToRegistrations }) => {
+      const totalRegistered = students.length;
+      const totalPresent = students.filter(s => s.isPresent).length;
+      const totalAbsent = totalRegistered - totalPresent;
+      const attendancePercentage = totalRegistered > 0 ? Math.round((totalPresent / totalRegistered) * 100) : 0;
+
+      const yearWiseData = useMemo(() => {
+        const years = ['1st Year', '2nd Year', '3rd Year', '4th Year'];
+        return years.map(year => {
+          const cohort = students.filter(s => s.year === year);
+          const reg = cohort.length;
+          const pres = cohort.filter(s => s.isPresent).length;
+          const pct = reg > 0 ? Math.round((pres / reg) * 100) : 0;
+          return { year, registered: reg, present: pres, absent: reg - pres, percentage: pct };
+        });
+      }, [students]);
+
+      const branchWiseData = useMemo(() => {
+        const branchMap = new Map();
+        students.forEach(s => {
+          const curr = branchMap.get(s.branch) || { registered: 0, present: 0 };
+          curr.registered += 1;
+          if (s.isPresent) curr.present += 1;
+          branchMap.set(s.branch, curr);
+        });
+
+        return Array.from(branchMap.entries())
+          .map(([branch, d]) => ({
+            branch,
+            registered: d.registered,
+            present: d.present,
+            absent: d.registered - d.present,
+            percentage: d.registered > 0 ? Math.round((d.present / d.registered) * 100) : 0,
+          }))
+          .sort((a, b) => b.percentage - a.percentage || b.present - a.present);
+      }, [students]);
+
+      const recentCheckIns = useMemo(() => {
+        return students.filter(s => s.isPresent && s.checkInTime).slice(-6).reverse();
+      }, [students]);
+
+      return (
+        <div className="space-y-8">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold uppercase tracking-wider mb-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                Live PRN Attendance Analytics
+              </div>
+              <h2 className="text-3xl font-extrabold text-white tracking-tight sm:text-4xl">
+                Event Analytics Dashboard
+              </h2>
+              <p className="text-slate-400 text-sm mt-1">
+                Real-time metrics updated dynamically as PRN barcodes are scanned at the gate.
+              </p>
+            </div>
+
+            <div>
+              <button
+                onClick={onNavigateToGate}
+                className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-lg shadow-blue-600/25 transition active:scale-95 flex items-center gap-2"
+              >
+                <span>🚪 Open Gate Scanner</span>
+              </button>
+            </div>
+          </div>
+
+          {/* 4 Hero KPI Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+            <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden group hover:border-slate-700 transition">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Total Registered</span>
+                <div className="w-10 h-10 rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30 flex items-center justify-center text-lg font-bold">👥</div>
+              </div>
+              <div className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">{totalRegistered}</div>
+              <p className="text-xs text-slate-400 mt-2">All pre-registered students in matrix</p>
+            </div>
+
+            <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden group hover:border-emerald-500/40 transition">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">Total Present</span>
+                <div className="w-10 h-10 rounded-xl bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center text-lg font-bold">✓</div>
+              </div>
+              <div className="text-3xl sm:text-4xl font-extrabold text-emerald-400 tracking-tight">{totalPresent}</div>
+              <div className="mt-2 flex items-center gap-2">
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">
+                  {attendancePercentage}% verified
+                </span>
+                <span className="text-xs text-slate-400">at gate</span>
+              </div>
+            </div>
+
+            <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden group hover:border-slate-700 transition">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-bold uppercase tracking-wider text-amber-400">Total Absent</span>
+                <div className="w-10 h-10 rounded-xl bg-amber-600/20 text-amber-400 border border-amber-500/30 flex items-center justify-center text-lg font-bold">⏳</div>
+              </div>
+              <div className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">{totalAbsent}</div>
+              <p className="text-xs text-slate-400 mt-2">Awaiting check-in at gate</p>
+            </div>
+
+            <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden group hover:border-indigo-500/40 transition">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-bold uppercase tracking-wider text-indigo-300">Turnout Rate</span>
+                <div className="w-10 h-10 rounded-xl bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 flex items-center justify-center text-lg font-bold">%</div>
+              </div>
+              <div className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">{attendancePercentage}%</div>
+              <div className="w-full bg-slate-800 rounded-full h-2.5 mt-3 overflow-hidden">
+                <div
+                  className="bg-gradient-to-r from-blue-500 via-indigo-500 to-emerald-400 h-2.5 rounded-full transition-all duration-700"
+                  style={{ width: `${attendancePercentage}%` }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Breakdown Section: Year-wise & Branch-wise */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8">
+            {/* Year-wise breakdown */}
+            <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
+              <div className="border-b border-slate-800 pb-4">
+                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                  <span>🎓 Year-wise Attendance Breakdown</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">Cohort participation across 1st to 4th academic years</p>
+              </div>
+
+              <div className="space-y-4">
+                {yearWiseData.map(item => (
+                  <div key={item.year} className="bg-slate-800/40 border border-slate-800 rounded-xl p-4 space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <div className="font-semibold text-white flex items-center gap-2">
+                        <span>{item.year}</span>
+                        <span className="text-xs text-slate-400 font-normal">({item.present} / {item.registered} Present)</span>
+                      </div>
+                      <div className="font-mono font-bold text-sm text-emerald-400">{item.percentage}%</div>
+                    </div>
+
+                    <div className="w-full bg-slate-800 rounded-full h-3 overflow-hidden flex">
+                      <div className="bg-gradient-to-r from-blue-600 to-emerald-500 h-3 rounded-full transition-all duration-500" style={{ width: `${item.percentage}%` }} />
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs text-slate-400 pt-1">
+                      <span>Registered: <strong className="text-slate-200">{item.registered}</strong></span>
+                      <span>Absent: <strong className="text-amber-400">{item.absent}</strong></span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Branch-wise breakdown */}
+            <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
+              <div className="border-b border-slate-800 pb-4">
+                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                  <span>🏛️ Branch-wise Attendance Breakdown</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">Discipline distribution and department turnout</p>
+              </div>
+
+              <div className="space-y-3.5 max-h-[420px] overflow-y-auto pr-1">
+                {branchWiseData.map(item => (
+                  <div key={item.branch} className="bg-slate-800/40 border border-slate-800 rounded-xl p-3.5 space-y-2">
+                    <div className="flex items-center justify-between text-xs sm:text-sm">
+                      <span className="font-semibold text-white truncate max-w-[220px] sm:max-w-xs" title={item.branch}>
+                        {item.branch}
+                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-xs font-mono text-slate-300">{item.present}/{item.registered}</span>
+                        <span className="px-2 py-0.5 rounded-full text-xs font-bold font-mono bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                          {item.percentage}%
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden">
+                      <div className="bg-gradient-to-r from-indigo-500 to-teal-400 h-2.5 rounded-full transition-all duration-500" style={{ width: `${item.percentage}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Recent check-in live stream */}
+          <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <span className="text-emerald-400 text-lg">⚡</span>
+                <h3 className="text-base font-bold text-white">Recent Gate Check-In Stream</h3>
+              </div>
+              <button onClick={onNavigateToRegistrations} className="text-xs text-blue-400 hover:text-blue-300 font-medium">
+                View All Registrations →
+              </button>
+            </div>
+
+            {recentCheckIns.length > 0 ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {recentCheckIns.map(student => (
+                  <div key={student.id} className="p-3 bg-slate-800/50 rounded-xl border border-slate-800 flex items-center justify-between">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-xs text-white shrink-0 ${student.avatarBg || 'bg-emerald-600'}`}>
+                        {student.name.charAt(0)}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-white truncate">{student.name}</div>
+                        <div className="text-[11px] text-slate-400 truncate font-mono">PRN: {student.prn}</div>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800/60 block">
+                        {student.checkInTime}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500 py-4 text-center">No students checked in yet. Open Gate Desk to scan attendees.</p>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    // --- COMPONENT: WALK-IN MODAL ---
+    const WalkInModal = ({ isOpen, onClose, onRegister, initialQuery }) => {
+      if (!isOpen) return null;
+      const isPrnQuery = initialQuery && (initialQuery.toUpperCase().startsWith('PRN') || /^\d+$/.test(initialQuery));
+      const [name, setName] = useState(!isPrnQuery && initialQuery && !initialQuery.includes('@') ? initialQuery : '');
+      const [prn, setPrn] = useState(isPrnQuery ? initialQuery.toUpperCase() : `PRN2024${Math.floor(100 + Math.random() * 900)}`);
+      const [email, setEmail] = useState(initialQuery && initialQuery.includes('@') ? initialQuery : '');
+      const [phone, setPhone] = useState(initialQuery && /^\d{10}$/.test(initialQuery) ? initialQuery : '9876543299');
+      const [year, setYear] = useState('1st Year');
+      const [branch, setBranch] = useState('Computer Science & Engineering');
+      const [markPresent, setMarkPresent] = useState(true);
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!name.trim() || !prn.trim() || !email.trim() || !phone.trim()) return;
+
+        const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const formattedPrn = prn.trim().toUpperCase();
+
+        const newStudent = {
+          id: `std-walkin-${Date.now()}`,
+          prn: formattedPrn,
+          collegeId: formattedPrn,
+          name: name.trim(),
+          email: email.trim().toLowerCase(),
+          phone: phone.trim(),
+          year,
+          branch,
+          isPresent: markPresent,
+          checkInTime: markPresent ? timeStr : null,
+          avatarBg: 'bg-indigo-600',
+        };
+
+        onRegister(newStudent);
+        onClose();
+      };
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl shadow-2xl max-w-lg w-full p-6 sm:p-8 relative">
+            <button onClick={onClose} className="absolute top-5 right-5 text-slate-400 hover:text-white text-xl p-1 rounded-lg hover:bg-slate-800">✕</button>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-11 h-11 rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30 flex items-center justify-center text-xl font-bold">+</div>
+              <div>
+                <h3 className="text-xl font-bold text-white">Register Walk-in Attendee</h3>
+                <p className="text-sm text-slate-400">Add an unregistered attendee to the PRN database</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Full Name *</label>
+                <input
+                  type="text"
+                  required
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  placeholder="e.g. Priyanshu Roy"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">College PRN *</label>
+                  <input
+                    type="text"
+                    required
+                    value={prn}
+                    onChange={e => setPrn(e.target.value)}
+                    placeholder="e.g. PRN2024999"
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white uppercase font-mono focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Phone Number *</label>
+                  <input
+                    type="tel"
+                    required
+                    value={phone}
+                    onChange={e => setPhone(e.target.value)}
+                    placeholder="e.g. 9876543299"
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Email ID *</label>
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  placeholder="e.g. priyanshu.roy@campus.edu"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Academic Year</label>
+                  <select value={year} onChange={e => setYear(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500">
+                    <option value="1st Year">1st Year</option>
+                    <option value="2nd Year">2nd Year</option>
+                    <option value="3rd Year">3rd Year</option>
+                    <option value="4th Year">4th Year</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Branch</label>
+                  <select value={branch} onChange={e => setBranch(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-xs sm:text-sm text-white focus:outline-none focus:border-blue-500">
+                    <option value="Computer Science & Engineering">Computer Science</option>
+                    <option value="Electronics & Communication">Electronics & Comm.</option>
+                    <option value="Mechanical Engineering">Mechanical</option>
+                    <option value="Information Technology">Information Tech</option>
+                    <option value="Electrical Engineering">Electrical</option>
+                    <option value="Data Science & AI">Data Science & AI</option>
+                    <option value="Civil Engineering">Civil</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="pt-2">
+                <label className="flex items-center gap-3 p-3 rounded-xl bg-slate-800/60 border border-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={markPresent}
+                    onChange={e => setMarkPresent(e.target.checked)}
+                    className="w-4 h-4 rounded text-blue-600 bg-slate-700 border-slate-600 focus:ring-0 cursor-pointer"
+                  />
+                  <span className="text-sm text-slate-300 font-medium">
+                    Mark as <strong className="text-emerald-400">Present</strong> immediately at the gate
+                  </span>
+                </label>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
+                <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-medium text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition">Cancel</button>
+                <button type="submit" className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl shadow-lg shadow-blue-600/30 transition active:scale-95">Save & Register</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      );
+    };
+
+    // --- MAIN APP COMPONENT ---
+    const App = () => {
+      const [students, setStudents] = useState([]);
+      const [activeTab, setActiveTab] = useState('gate');
+      const [toasts, setToasts] = useState([]);
+      const [isLoaded, setIsLoaded] = useState(false);
+
+      useEffect(() => {
+        const data = getStoredStudents();
+        setStudents(data);
+        setIsLoaded(true);
+      }, []);
+
+      useEffect(() => {
+        if (isLoaded) {
+          saveStoredStudents(students);
+        }
+      }, [students, isLoaded]);
+
+      const showToast = useCallback((type, title, description) => {
+        const newToast = {
+          id: `toast-${Date.now()}-${Math.random()}`,
+          type,
+          title,
+          description,
+        };
+        setToasts(prev => [...prev, newToast]);
+      }, []);
+
+      const dismissToast = useCallback((id) => {
+        setToasts(prev => prev.filter(t => t.id !== id));
+      }, []);
+
+      const handleMarkPresent = useCallback((studentId) => {
+        const timeString = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        setStudents(prev => {
+          const next = prev.map(s => {
+            if (s.id === studentId) {
+              return { ...s, isPresent: true, checkInTime: timeString };
+            }
+            return s;
+          });
+          saveStoredStudents(next);
+          return next;
+        });
+      }, []);
+
+      const handleUndoCheckIn = useCallback((studentId) => {
+        setStudents(prev => {
+          const next = prev.map(s => {
+            if (s.id === studentId) {
+              return { ...s, isPresent: false, checkInTime: null };
+            }
+            return s;
+          });
+          saveStoredStudents(next);
+          return next;
+        });
+      }, []);
+
+      const handleToggleAttendance = useCallback((studentId) => {
+        const target = students.find(s => s.id === studentId);
+        if (!target) return;
+
+        if (target.isPresent) {
+          handleUndoCheckIn(studentId);
+          showToast('info', 'Status Updated', `${target.name} marked as Absent.`);
+        } else {
+          handleMarkPresent(studentId);
+          playSuccessChime();
+          showToast('success', 'Status Updated', `${target.name} marked as Present.`);
+        }
+      }, [students, handleMarkPresent, handleUndoCheckIn, showToast]);
+
+      const handleAddStudent = useCallback((newStudent) => {
+        setStudents(prev => {
+          const next = [newStudent, ...prev];
+          saveStoredStudents(next);
+          return next;
+        });
+      }, []);
+
+      const handleResetData = useCallback(() => {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_STUDENTS));
+        setStudents([...INITIAL_STUDENTS]);
+      }, []);
+
+      const handleClearAttendance = useCallback(() => {
+        setStudents(prev => {
+          const cleared = prev.map(s => ({ ...s, isPresent: false, checkInTime: null }));
+          saveStoredStudents(cleared);
+          return cleared;
+        });
+        showToast('info', 'Attendance Cleared', 'All attendees set to Not Yet Checked In.');
+      }, [showToast]);
+
+      const total = students.length;
+      const present = students.filter(s => s.isPresent).length;
+      const pct = total > 0 ? Math.round((present / total) * 100) : 0;
+
+      return (
+        <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-blue-600 selection:text-white">
+          {/* Header */}
+          <header className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 transition-all">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+              <div className="flex items-center justify-between h-16 sm:h-20 gap-4">
+                <div className="flex items-center gap-3 shrink-0">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-emerald-500 p-0.5 shadow-lg shadow-blue-500/20">
+                    <div className="w-full h-full bg-slate-900 rounded-[10px] flex items-center justify-center text-xl">
+                      🎟️
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg sm:text-xl font-black tracking-tight text-white">
+                        Campus<span className="text-blue-500">Gate</span>
+                      </span>
+                      <span className="hidden md:inline-block px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                        Camera Scanner Live
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 hidden sm:block">
+                      PRN Barcode Verification & Gate Attendance System
+                    </p>
+                  </div>
+                </div>
+
+                {/* Tabs */}
+                <nav className="flex items-center gap-1 sm:gap-2 bg-slate-950/60 p-1.5 rounded-2xl border border-slate-800">
+                  <button
+                    onClick={() => setActiveTab('gate')}
+                    className={`px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition flex items-center gap-2 ${
+                      activeTab === 'gate'
+                        ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+                    }`}
+                  >
+                    <span>📷</span>
+                    <span className="hidden sm:inline">Gate Scanner</span>
+                  </button>
+
+                  <button
+                    onClick={() => setActiveTab('registrations')}
+                    className={`px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition flex items-center gap-2 ${
+                      activeTab === 'registrations'
+                        ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+                    }`}
+                  >
+                    <span>👥</span>
+                    <span className="hidden sm:inline">All Registrations</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono">
+                      {total}
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => setActiveTab('dashboard')}
+                    className={`px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition flex items-center gap-2 ${
+                      activeTab === 'dashboard'
+                        ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+                    }`}
+                  >
+                    <span>📊</span>
+                    <span className="hidden sm:inline">Dashboard</span>
+                    <span className="hidden md:inline-block text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800/50 font-mono">
+                      {pct}%
+                    </span>
+                  </button>
+                </nav>
+
+                <div className="hidden lg:flex items-center gap-3">
+                  <div className="px-3.5 py-1.5 rounded-xl bg-slate-800/80 border border-slate-700/80 flex items-center gap-2.5">
+                    <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <div className="text-xs">
+                      <span className="text-slate-400">Turnout: </span>
+                      <span className="font-bold text-emerald-400 font-mono">
+                        {present}/{total}
+                      </span>
+                      <span className="text-slate-400 ml-1">({pct}%)</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </header>
+
+          {/* Main Body */}
+          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            {activeTab === 'gate' && (
+              <GateDesk
+                students={students}
+                onMarkPresent={handleMarkPresent}
+                onUndoCheckIn={handleUndoCheckIn}
+                onAddStudent={handleAddStudent}
+                showToast={showToast}
+              />
+            )}
+
+            {activeTab === 'registrations' && (
+              <RegistrationsList
+                students={students}
+                onToggleAttendance={handleToggleAttendance}
+                onAddStudent={handleAddStudent}
+                onResetData={handleResetData}
+                onClearAttendance={handleClearAttendance}
+                showToast={showToast}
+              />
+            )}
+
+            {activeTab === 'dashboard' && (
+              <Dashboard
+                students={students}
+                onNavigateToGate={() => setActiveTab('gate')}
+                onNavigateToRegistrations={() => setActiveTab('registrations')}
+              />
+            )}
+          </main>
+
+          <ToastLayer toasts={toasts} onDismiss={dismissToast} />
+
+          <footer className="border-t border-slate-900 bg-slate-950/80 py-6 text-center text-xs text-slate-500">
+            <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <p>
+                PRN Barcode / QR Gate Entry & Verification System • localStorage Synchronized
+              </p>
+              <div className="flex items-center gap-4">
+                <button onClick={handleClearAttendance} className="text-slate-400 hover:text-rose-400 transition">
+                  Clear All Check-ins
+                </button>
+                <span>•</span>
+                <button onClick={handleResetData} className="text-slate-400 hover:text-blue-400 transition">
+                  Restore Mock Data
+                </button>
+              </div>
+            </div>
+          </footer>
+        </div>
+      );
+    };
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
